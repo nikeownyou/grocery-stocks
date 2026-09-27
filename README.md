@@ -1,46 +1,50 @@
 # 📈 Grocery Stocks
 
-Staple grocery prices, evaluated like stocks: daily movers, 7/30-day moving
-averages, 30-day highs and lows, buy-the-dip signals, and a basket index
-that treats your whole grocery list like a portfolio.
+Track staple grocery prices like stocks: daily movers, moving averages,
+30-day highs/lows, buy-the-dip signals, and a basket index that treats
+your whole grocery list like a portfolio.
 
-## How it works
+**Live app:** https://grocery-stocks-wjwa8wlszt9bnm6acpjpxq.streamlit.app/
 
-- **Google Sheet = the price history.** One row per ticker per day:
-  `Date | Ticker | Item | Price | Unit | Store | Notes`.
-- **Daily tracker** appends today's Atlantic Superstore prices automatically.
-- **Streamlit = the terminal.** Market overview, ticker charts, basket index.
-- Prices can also be logged by hand with the **✏️ Log a price** form.
+## How it works — no Google, no keys
 
-## Signals
+- Prices live in **`groceries.db`** (SQLite), committed right here in the repo.
+- A GitHub Actions workflow (`.github/workflows/daily-fetch.yml`) runs every
+  morning, fetches Atlantic Superstore flyer prices via Flipp's public
+  search endpoint, and commits the updated DB.
+- Streamlit Cloud redeploys on every push, so the app always reads fresh data.
+- No service accounts, no API keys, no secrets to manage.
 
-| Signal | Meaning |
-|--------|---------|
-| 🟢 BUY — 30-day low | Cheapest it's been in a month — stock up |
-| 🟢 BUY THE DIP | More than 3% below its 7-day average |
-| 🔴 30-day high | Most expensive in a month — wait if you can |
-| ➖ HOLD | Nothing special going on |
+## Files
 
-## Run locally
+| File | What it is |
+|---|---|
+| `app.py` | The Streamlit dashboard (reads `groceries.db`) |
+| `groceries.db` | The price history (SQLite) |
+| `schema.sql` | Table definition |
+| `seed_db.py` | Rebuilds the DB from `sample_data.csv` |
+| `fetch_flyer.py` | Daily flyer-price fetcher (used by Actions) |
+| `sample_data.csv` | Original seed data (kept for reference) |
+
+## The data
+
+- **Store:** Atlantic Superstore. **Source:** weekly flyer/sale prices —
+  these are the "dips", not everyday shelf prices.
+- The DB is seeded with **simulated** data so the charts work from day one;
+  the app says so honestly until real flyer prices flow in.
+- Flyer matching is heuristic (see `fetch_flyer.py`): each ticker has
+  package-size hints and reject hints, and the raw flyer item name is always
+  stored in the `note` column so matches stay auditable.
+
+## Run it locally
 
 ```bash
-pip install -r requirements.txt
+python3 seed_db.py          # rebuild groceries.db from the seed CSV
+python3 fetch_flyer.py      # fetch today's flyer prices into the DB
 streamlit run app.py
 ```
 
-Without Google credentials configured, the app shows the demo data from `sample_data.csv`.
+## Log a price by hand
 
-## Deploy (Streamlit Community Cloud)
-
-1. Push this folder to a public GitHub repo.
-2. On share.streamlit.io → New app → pick the repo, main file `app.py`.
-3. In the app's **Secrets**, add:
-   ```toml
-   sheet_id = "YOUR_SHEET_ID"
-
-   [gcp_service_account]
-   # paste the service-account JSON key fields here
-   ```
-   The Google Sheet must be shared with the service account's email
-   (Editor if you want the in-app logging form to work).
-4. Deploy — no code changes needed.
+The deployed app can't persist writes, so manual entries go through Muse
+in chat — he'll add them with a commit.

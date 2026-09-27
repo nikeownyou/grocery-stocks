@@ -5,19 +5,27 @@ Track staple grocery prices like stocks: daily movers, moving averages,
 30-day highs/lows, and buy-the-dip signals — plus a basket index that
 treats your whole grocery list like a portfolio.
 
+Data lives in groceries.db (SQLite), committed to this repo.
+A GitHub Actions workflow refetches Atlantic Superstore flyer prices
+daily and commits the updated DB — no API keys, no cloud secrets.
+
 WHAT YOU'LL LEARN FROM THIS FILE
+- sqlite3: reading a local database with the standard library
 - pandas rolling(): moving averages in one line
 - groupby().apply(): computing per-ticker stats
-- Merging stats back for an overview table
 - Plotly multi-line charts (price + moving averages)
 - A "basket index": summing one unit of each ticker per day
-- st.form writing rows back to Google Sheets (same pattern as inventory)
 """
 
-import streamlit as st
+import sqlite3
+from pathlib import Path
+
 import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
+import streamlit as st
+
+DB_PATH = Path(__file__).parent / "groceries.db"
 
 # ---------------------------------------------------------------------------
 # 1. PAGE SETUP
@@ -52,69 +60,47 @@ st.markdown(
     .kpi-2 { background: linear-gradient(135deg, #667eea, #764ba2); }
     .kpi-3 { background: linear-gradient(135deg, #f093fb, #f5576c); }
     .kpi-4 { background: linear-gradient(135deg, #f6d365, #fda085); }
-    .up { color: #e74c3c; font-weight: 600; }    /* prices up = bad, red */
-    .down { color: #27ae60; font-weight: 600; }  /* prices down = good, green */
     </style>
     """,
     unsafe_allow_html=True,
 )
 
-SCOPES = ["https://www.googleapis.com/auth/spreadsheets"]
-
 # ---------------------------------------------------------------------------
-# 2. DATA LOADING
+# 2. DATA LOADING — from the SQLite DB in this repo
 # ---------------------------------------------------------------------------
-@st.cache_resource
-def get_worksheet():
-    import gspread
-    from google.oauth2.service_account import Credentials
-
-    creds = Credentials.from_service_account_info(
-        st.secrets["gcp_service_account"],
-        scopes=SCOPES,
-    )
-    client = gspread.authorize(creds)
-    return client.open_by_key(st.secrets["sheet_id"]).sheet1
-
-
-try:
-    ws = get_worksheet()
-    LIVE = True
-except Exception:
-    ws = None
-    LIVE = False
-
-
 @st.cache_data(ttl=600)
 def load_data() -> pd.DataFrame:
-    if LIVE:
-        df = pd.DataFrame(ws.get_all_records())
-    else:
-        df = pd.read_csv("sample_data.csv")
-        st.info("👀 Showing demo data — connect your Google Sheet (see README) for live prices.")
-
+    con = sqlite3.connect(DB_PATH)
+    df = pd.read_sql_query(
+        "SELECT date AS Date, ticker AS Ticker, item AS Item, price AS Price,"
+        " unit AS Unit, store AS Store, source AS Source, note AS Notes"
+        " FROM prices ORDER BY Ticker, Date",
+        con,
+    )
+    con.close()
     df["Date"] = pd.to_datetime(df["Date"])
     df["Price"] = pd.to_numeric(df["Price"])
-    return df.sort_values(["Ticker", "Date"]).reset_index(drop=True)
+    return df.reset_index(drop=True)
 
 
 df = load_data()
+real_rows = int((df["Source"] != "simulated").sum())
+data_as_of = df["Date"].max().date()
 
 # ---------------------------------------------------------------------------
 # 3. STOCK-STYLE STATS PER TICKER
-#    For each ticker: moving averages, % changes, 30-day high/low, signal.
 # ---------------------------------------------------------------------------
 def ticker_stats(g: pd.DataFrame) -> pd.Series:
     g = g.sort_values("Date")
     prices = g["Price"]
-    cur, prev = prices.iloc[-1], prices.iloc[-2] if len(prices) > 1 else prices.iloc[-1]
+    cur = prices.iloc[-1]
+    prev = prices.iloc[-2] if len(prices) > 1 else cur
     ma7 = prices.rolling(7, min_periods=1).mean().iloc[-1]
     ma30 = prices.rolling(30, min_periods=1).mean().iloc[-1]
     hi30, lo30 = prices.tail(30).max(), prices.tail(30).min()
     day_chg = (cur - prev) / prev * 100 if prev else 0
-    w0 = prices.iloc[-1]
     w7 = prices.iloc[-8] if len(prices) > 7 else prices.iloc[0]
-    week_chg = (w0 - w7) / w7 * 100 if w7 else 0
+    week_chg = (cur - w7) / w7 * 100 if w7 else 0
 
     if cur <= lo30 * 1.001:
         signal = "🟢 BUY — 30-day low"
@@ -159,11 +145,17 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
+if real_rows == 0:
+    st.warning(
+        "🧪 Showing **simulated seed data** — the charts are real, the prices are not. "
+        "Real Atlantic Superstore flyer prices start flowing with the first scheduled fetch."
+    )
+
 # Basket index: one unit of every ticker, summed per day — the "portfolio"
 basket = df.groupby("Date")["Price"].sum().reset_index(name="Basket")
-basket_today = basket["Price"].iloc[-1]
-basket_prev = basket["Price"].iloc[-2] if len(basket) > 1 else basket_today
-basket_chg = (basket_today - basket_prev) / basket_prev * 100
+basket_today = basket["Basket"].iloc[-1]
+basket_prev = basket["Basket"].iloc[-2] if len(basket) > 1 else basket_today
+basket_chg = (basket_today - basket_prev) / basket_prev * 100 if basket_prev else 0
 buy_count = int(stats["Signal"].str.startswith("🟢").sum())
 
 kpi1, kpi2, kpi3, kpi4 = st.columns(4)
@@ -191,7 +183,7 @@ kpi4.markdown(
 st.write("")
 
 # ---------------------------------------------------------------------------
-# 5. MARKET OVERVIEW — every ticker, one row each
+# 5. MARKET OVERVIEW
 # ---------------------------------------------------------------------------
 st.subheader("📊 Market overview")
 
@@ -206,12 +198,15 @@ cols = [c for c in cols if c in overview.columns]
 st.dataframe(overview[cols], use_container_width=True, hide_index=True)
 
 # ---------------------------------------------------------------------------
-# 6. TICKER DETAIL — price chart with moving averages
+# 6. TICKER DETAIL
 # ---------------------------------------------------------------------------
 st.subheader("🔍 Ticker detail")
 tickers = sorted(df["Ticker"].unique())
-choice = st.selectbox("Ticker", options=tickers,
-                      format_func=lambda t: f"{t} — {df[df['Ticker']==t]['Item'].iloc[-1]}")
+choice = st.selectbox(
+    "Ticker",
+    options=tickers,
+    format_func=lambda t: f"{t} — {df[df['Ticker'] == t]['Item'].iloc[-1]}",
+)
 
 g = df[df["Ticker"] == choice].sort_values("Date").copy()
 g["MA7"] = g["Price"].rolling(7, min_periods=1).mean()
@@ -246,29 +241,17 @@ fig_b.update_layout(height=320, margin=dict(l=10, r=10, t=10, b=10),
 st.plotly_chart(fig_b, use_container_width=True)
 
 # ---------------------------------------------------------------------------
-# 8. LOG A PRICE — manual entry (auto-tracking fills this daily too)
+# 8. ABOUT THE DATA
 # ---------------------------------------------------------------------------
-st.subheader("✏️ Log a price")
-if not LIVE:
-    st.info("🔒 Connect your Google Sheet to enable logging.")
-else:
-    with st.form("log_price", clear_on_submit=True):
-        t = st.selectbox("Ticker", options=tickers)
-        log_date = st.date_input("Date", value=pd.Timestamp.today().date())
-        price = st.number_input("Price ($)", min_value=0.0, step=0.01, format="%.2f")
-        note = st.text_input("Note (optional, e.g. sale)")
-        submitted = st.form_submit_button("Log price", type="primary")
-    if submitted:
-        if price <= 0:
-            st.error("Enter a price above $0.")
-        else:
-            item = df[df["Ticker"] == t]["Item"].iloc[-1]
-            unit = df[df["Ticker"] == t]["Unit"].iloc[-1]
-            ws.append_row([log_date.isoformat(), t, item, round(price, 2), unit,
-                           "Atlantic Superstore", note.strip()],
-                          value_input_option="USER_ENTERED")
-            st.cache_data.clear()
-            st.success(f"Logged **{t}** at ${price:.2f} ✓")
-            st.rerun()
+st.subheader("ℹ️ About the data")
+st.markdown(
+    f"""
+    - **Store:** Atlantic Superstore (flyer prices — the weekly "dips", not everyday shelf prices)
+    - **Data as of:** {data_as_of} · **Real price points:** {real_rows:,}
+    - **Updates:** a scheduled GitHub Actions run refetches flyer prices every morning
+      and commits them to `groceries.db` in this repo — no API keys, no cloud secrets.
+    - **Manual entries:** tell Muse in chat and he'll add them with a commit.
+    """
+)
 
-st.caption("Built with Streamlit 💛 — prices refresh daily from Atlantic Superstore.")
+st.caption("Built with Streamlit 💛 — prices refresh daily from Atlantic Superstore flyers.")
