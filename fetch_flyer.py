@@ -1,14 +1,18 @@
 #!/usr/bin/env python3
 """
-Daily Atlantic Superstore flyer-price fetcher.
+Daily flyer-price fetcher for Grocery Stocks.
 
 Hits Flipp's public item-search endpoint (the same API flipp.com's own
-website uses), filters to Atlantic Superstore flyer items, matches one
-product per staple ticker, and upserts today's prices into groceries.db.
+website uses), matches one product per staple ticker per store, and
+upserts today's prices into groceries.db.
 
-Why Flipp and not Superstore directly: Loblaw's product API blocks
+Stores: Atlantic Superstore, Sobeys, Costco — all publish flyers on
+Flipp for the configured postal region. Costco coverage is sparse
+(monthly coupon-book style, bulk packs); missing days are normal.
+
+Why Flipp and not the stores directly: Loblaw's product API blocks
 scripted access (HTTP 403 via Akamai). Flipp aggregates the same
-store's flyers and exposes an unauthenticated search endpoint.
+flyers and exposes an unauthenticated search endpoint.
 Caveat: this is flyer/sale data (weekly cadence), not everyday shelf
 prices — the sale prices are the "dips" in the stock-chart analogy.
 
@@ -31,7 +35,7 @@ import urllib.request
 from datetime import date
 from pathlib import Path
 
-STORE = "Atlantic Superstore"
+STORES = ["Atlantic Superstore", "Sobeys", "Costco"]
 UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"
 
 # ticker -> search query, required name keywords, unit label, canonical
@@ -53,13 +57,14 @@ TRACKED = {
     "BANANA":  dict(query="bananas",        keywords=["BANANA"],  unit="kg",
                     item="Bananas", size=["/KG", "PER KG"], reject=[]),
     "APPLES":  dict(query="apples",         keywords=["APPLE"],   unit="kg",
-                    item="Gala Apples", size=["/KG", "PER KG", "GALA"], reject=["JUICE"]),
+                    item="Gala Apples", size=["/KG", "PER KG", "GALA"], reject=["JUICE", "RED BULL"]),
     "RICE":    dict(query="rice 2kg",       keywords=["RICE"],    unit="2kg",
                     item="2kg Long Grain Rice", size=["2 KG", "2KG"], reject=["1 KG", "1KG"]),
     "PASTA":   dict(query="pasta 900g",     keywords=["PASTA"],   unit="900g",
                     item="900g Pasta", size=["900"], reject=[]),
     "COFFEE":  dict(query="ground coffee",  keywords=["COFFEE"],  unit="875g",
-                    item="875g Ground Coffee", size=["875"], reject=["INSTANT", "K-CUP", "PODS"]),
+                    item="875g Ground Coffee", size=["875"],
+                    reject=["INSTANT", "K-CUP", "PODS", "250 G", "250G"]),
     "OATS":    dict(query="oats 1kg",       keywords=["OAT"],     unit="1kg",
                     item="1kg Rolled Oats", size=["1 KG", "1KG"], reject=[]),
 }
@@ -73,11 +78,11 @@ def flipp_search(query, postal):
         return json.load(resp).get("items", [])
 
 
-def match_item(items, spec):
-    """Best-scoring Atlantic Superstore item, or None if nothing is clean."""
+def match_item(items, spec, store):
+    """Best-scoring item for this store, or None if nothing is clean."""
     best, best_score = None, -999
     for it in items:
-        if it.get("merchant_name") != STORE:
+        if it.get("merchant_name") != store:
             continue
         name = (it.get("name") or "").upper()
         if not all(k in name for k in spec["keywords"]):
@@ -97,7 +102,7 @@ def match_item(items, spec):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--db", default=str(Path(__file__).parent / "groceries.db"))
-    ap.add_argument("--postal", default="B3Z3E3")  # Seabright / St. Margarets Bay, NS
+    ap.add_argument("--postal", default="B3Z3E3")  # Upper Tantallon / St. Margarets Bay, NS
     args = ap.parse_args()
 
     con = sqlite3.connect(args.db)
@@ -111,27 +116,27 @@ def main():
         except Exception as e:  # network hiccup -> try next ticker
             print(f"{ticker}: search failed ({e}), skip", file=sys.stderr)
             continue
-        it = match_item(items, spec)
-        if not it or not it.get("current_price"):
-            print(f"{ticker}: no clean flyer match today")
-            time.sleep(2)
-            continue
-        valid = f"{(it.get('valid_from') or '')[:10]}→{(it.get('valid_to') or '')[:10]}"
-        note = f"flyer: {it['name']} | {valid}"
-        if it.get("sale_story"):
-            note += f" | {it['sale_story']}"
-        cur = con.execute(
-            "INSERT OR IGNORE INTO prices"
-            " (date, ticker, item, price, unit, store, source, note)"
-            " VALUES (?, ?, ?, ?, ?, ?, 'flyer', ?)",
-            (today, ticker, spec["item"], float(it["current_price"]),
-             spec["unit"], STORE, note),
-        )
-        if cur.rowcount:
-            added += 1
-            print(f"{ticker}: ${it['current_price']} — {it['name']}")
-        else:
-            print(f"{ticker}: already logged today, skip")
+        for store in STORES:
+            it = match_item(items, spec, store)
+            if not it or not it.get("current_price"):
+                print(f"{ticker} @ {store}: no clean flyer match today")
+                continue
+            valid = f"{(it.get('valid_from') or '')[:10]}→{(it.get('valid_to') or '')[:10]}"
+            note = f"flyer: {it['name']} | {valid}"
+            if it.get("sale_story"):
+                note += f" | {it['sale_story']}"
+            cur = con.execute(
+                "INSERT OR IGNORE INTO prices"
+                " (date, ticker, item, price, unit, store, source, note)"
+                " VALUES (?, ?, ?, ?, ?, ?, 'flyer', ?)",
+                (today, ticker, spec["item"], float(it["current_price"]),
+                 spec["unit"], store, note),
+            )
+            if cur.rowcount:
+                added += 1
+                print(f"{ticker} @ {store}: ${it['current_price']} — {it['name']}")
+            else:
+                print(f"{ticker} @ {store}: already logged today, skip")
         time.sleep(2)  # be gentle with the endpoint
 
     con.commit()

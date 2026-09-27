@@ -10,8 +10,9 @@ your whole grocery list like a portfolio.
 
 - Prices live in **`groceries.db`** (SQLite), committed right here in the repo.
 - A GitHub Actions workflow (`.github/workflows/daily-fetch.yml`) runs every
-  morning, fetches Atlantic Superstore flyer prices via Flipp's public
-  search endpoint, and commits the updated DB.
+  morning, fetches flyer prices for 12 staples across **Atlantic Superstore,
+  Sobeys, and Costco** via Flipp's public search endpoint, and commits the
+  updated DB.
 - Streamlit Cloud redeploys on every push, so the app always reads fresh data.
 - No service accounts, no API keys, no secrets to manage.
 
@@ -28,13 +29,16 @@ your whole grocery list like a portfolio.
 
 ## The data
 
-- **Store:** Atlantic Superstore. **Source:** weekly flyer/sale prices —
-  these are the "dips", not everyday shelf prices.
+- **Stores:** Atlantic Superstore, Sobeys, Costco. **Source:** weekly
+  flyer/sale prices — these are the "dips", not everyday shelf prices.
 - The DB is seeded with **simulated** data so the charts work from day one;
   the app says so honestly until real flyer prices flow in.
 - Flyer matching is heuristic (see `fetch_flyer.py`): each ticker has
   package-size hints and reject hints, and the raw flyer item name is always
   stored in the `note` column so matches stay auditable.
+- Costco coverage is sparse (monthly coupon-book style, bulk packs); gaps are
+  normal. Bulk packs may differ in size from the ticker's canonical unit —
+  check the `note` column before trusting a signal.
 
 ## Run it locally
 

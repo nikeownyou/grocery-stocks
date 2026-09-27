@@ -84,8 +84,26 @@ def load_data() -> pd.DataFrame:
 
 
 df = load_data()
-real_rows = int((df["Source"] != "simulated").sum())
-data_as_of = df["Date"].max().date()
+
+st.markdown(
+    """
+    <div class="app-header">
+        <h1>📈 Grocery Stocks</h1>
+        <p>Your staples, traded like tickers. Buy the dip.</p>
+    </div>
+    """,
+    unsafe_allow_html=True,
+)
+
+# Store selector — everything below is computed for the chosen store
+stores = sorted(df["Store"].unique().tolist())
+default_store = "Atlantic Superstore" if "Atlantic Superstore" in stores else stores[0]
+store_choice = st.selectbox("🏬 Store", options=stores,
+                            index=stores.index(default_store))
+
+dff = df[df["Store"] == store_choice].reset_index(drop=True)
+real_rows = int((dff["Source"] != "simulated").sum())
+data_as_of = dff["Date"].max().date()
 
 # ---------------------------------------------------------------------------
 # 3. STOCK-STYLE STATS PER TICKER
@@ -126,33 +144,23 @@ def ticker_stats(g: pd.DataFrame) -> pd.Series:
 
 
 stats_rows = []
-for ticker, g in df.groupby("Ticker"):
+for ticker, g in dff.groupby("Ticker"):
     s = ticker_stats(g)
     s["Ticker"] = ticker
     stats_rows.append(s)
 stats = pd.DataFrame(stats_rows)
 
 # ---------------------------------------------------------------------------
-# 4. HEADER + KPIs
+# 4. KPIs
 # ---------------------------------------------------------------------------
-st.markdown(
-    """
-    <div class="app-header">
-        <h1>📈 Grocery Stocks</h1>
-        <p>Your staples, traded like tickers. Buy the dip.</p>
-    </div>
-    """,
-    unsafe_allow_html=True,
-)
-
 if real_rows == 0:
     st.warning(
-        "🧪 Showing **simulated seed data** — the charts are real, the prices are not. "
-        "Real Atlantic Superstore flyer prices start flowing with the first scheduled fetch."
+        f"🧪 Showing **simulated seed data** for {store_choice} — the charts are real, "
+        "the prices are not. Real flyer prices start flowing with the first scheduled fetch."
     )
 
 # Basket index: one unit of every ticker, summed per day — the "portfolio"
-basket = df.groupby("Date")["Price"].sum().reset_index(name="Basket")
+basket = dff.groupby("Date")["Price"].sum().reset_index(name="Basket")
 basket_today = basket["Basket"].iloc[-1]
 basket_prev = basket["Basket"].iloc[-2] if len(basket) > 1 else basket_today
 basket_chg = (basket_today - basket_prev) / basket_prev * 100 if basket_prev else 0
@@ -201,14 +209,14 @@ st.dataframe(overview[cols], use_container_width=True, hide_index=True)
 # 6. TICKER DETAIL
 # ---------------------------------------------------------------------------
 st.subheader("🔍 Ticker detail")
-tickers = sorted(df["Ticker"].unique())
+tickers = sorted(dff["Ticker"].unique())
 choice = st.selectbox(
     "Ticker",
     options=tickers,
-    format_func=lambda t: f"{t} — {df[df['Ticker'] == t]['Item'].iloc[-1]}",
+    format_func=lambda t: f"{t} — {dff[dff['Ticker'] == t]['Item'].iloc[-1]}",
 )
 
-g = df[df["Ticker"] == choice].sort_values("Date").copy()
+g = dff[dff["Ticker"] == choice].sort_values("Date").copy()
 g["MA7"] = g["Price"].rolling(7, min_periods=1).mean()
 g["MA30"] = g["Price"].rolling(30, min_periods=1).mean()
 
@@ -244,9 +252,25 @@ st.plotly_chart(fig_b, use_container_width=True)
 # 8. ABOUT THE DATA
 # ---------------------------------------------------------------------------
 st.subheader("ℹ️ About the data")
+
+coverage = (
+    df[df["Source"] != "simulated"]
+    .groupby("Store")
+    .agg(tickers=("Ticker", "nunique"), points=("Price", "count"),
+          latest=("Date", "max"))
+    .reset_index()
+)
+if not coverage.empty:
+    coverage["latest"] = pd.to_datetime(coverage["latest"]).dt.date.astype(str)
+    st.markdown("**Real flyer coverage by store**")
+    st.dataframe(coverage.rename(columns={
+        "Store": "Store", "tickers": "Tickers", "points": "Price points",
+        "latest": "Latest"}),
+        use_container_width=True, hide_index=True)
+
 st.markdown(
     f"""
-    - **Store:** Atlantic Superstore (flyer prices — the weekly "dips", not everyday shelf prices)
+    - **Viewing:** {store_choice} — flyer prices (the weekly "dips", not everyday shelf prices)
     - **Data as of:** {data_as_of} · **Real price points:** {real_rows:,}
     - **Updates:** a scheduled GitHub Actions run refetches flyer prices every morning
       and commits them to `groceries.db` in this repo — no API keys, no cloud secrets.
@@ -254,4 +278,4 @@ st.markdown(
     """
 )
 
-st.caption("Built with Streamlit 💛 — prices refresh daily from Atlantic Superstore flyers.")
+st.caption("Built with Streamlit 💛 — prices refresh daily from store flyers.")
