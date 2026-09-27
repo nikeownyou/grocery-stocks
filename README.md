@@ -33,12 +33,17 @@ your whole grocery list like a portfolio.
   flyer/sale prices — these are the "dips", not everyday shelf prices.
 - The DB is seeded with **simulated** data so the charts work from day one;
   the app says so honestly until real flyer prices flow in.
+- **Units are verified, not assumed:** the fetcher parses the actual package
+  size out of each flyer item name ("6 LB", "915/930 G", "1.21kg", "$1/lb"
+  hints) into the `unit` column, plus a normalized `unit_price` per base
+  unit ($/kg, $/100g, $/L, $/dozen, $/loaf) so prices compare fairly across
+  stores and package sizes. When a flyer hides the size, `unit_price` stays
+  NULL and the app says so instead of guessing.
 - Flyer matching is heuristic (see `fetch_flyer.py`): each ticker has
   package-size hints and reject hints, and the raw flyer item name is always
   stored in the `note` column so matches stay auditable.
 - Costco coverage is sparse (monthly coupon-book style, bulk packs); gaps are
-  normal. Bulk packs may differ in size from the ticker's canonical unit —
-  check the `note` column before trusting a signal.
+  normal.
 
 ## Run it locally
 

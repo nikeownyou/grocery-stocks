@@ -5,14 +5,16 @@
 --   'manual'    — logged by hand
 
 CREATE TABLE IF NOT EXISTS prices (
-    date   TEXT NOT NULL,
-    ticker TEXT NOT NULL,
-    item   TEXT NOT NULL,
-    price  REAL NOT NULL,
-    unit   TEXT NOT NULL,
-    store  TEXT NOT NULL,
-    source TEXT NOT NULL DEFAULT 'manual',
-    note   TEXT,
+    date       TEXT NOT NULL,
+    ticker     TEXT NOT NULL,
+    item       TEXT NOT NULL,
+    price      REAL NOT NULL,   -- package price in CAD
+    unit       TEXT NOT NULL,   -- ACTUAL package size, e.g. "6 lb", "1.21 kg"
+    unit_price REAL,            -- price per base unit (per kg, per 100g, per L,
+                               -- per dozen, per loaf); NULL when size unknown
+    store      TEXT NOT NULL,
+    source     TEXT NOT NULL DEFAULT 'manual',
+    note       TEXT,
     PRIMARY KEY (date, ticker, store)
 );
 

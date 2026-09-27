@@ -25,6 +25,8 @@ import plotly.express as px
 import plotly.graph_objects as go
 import streamlit as st
 
+from fetch_flyer import BASE_LABEL, BASE_UNIT
+
 DB_PATH = Path(__file__).parent / "groceries.db"
 
 # ---------------------------------------------------------------------------
@@ -73,7 +75,8 @@ def load_data() -> pd.DataFrame:
     con = sqlite3.connect(DB_PATH)
     df = pd.read_sql_query(
         "SELECT date AS Date, ticker AS Ticker, item AS Item, price AS Price,"
-        " unit AS Unit, store AS Store, source AS Source, note AS Notes"
+        " unit AS Unit, unit_price AS UnitPrice, store AS Store,"
+        " source AS Source, note AS Notes"
         " FROM prices ORDER BY Ticker, Date",
         con,
     )
@@ -105,12 +108,16 @@ dff = df[df["Store"] == store_choice].reset_index(drop=True)
 real_rows = int((dff["Source"] != "simulated").sum())
 data_as_of = dff["Date"].max().date()
 
+# Comparable series: per-unit price where the flyer package size is known,
+# otherwise the package price (unit sizes marked "pack" in the table)
+dff["Px"] = dff["UnitPrice"].fillna(dff["Price"])
+
 # ---------------------------------------------------------------------------
 # 3. STOCK-STYLE STATS PER TICKER
 # ---------------------------------------------------------------------------
 def ticker_stats(g: pd.DataFrame) -> pd.Series:
     g = g.sort_values("Date")
-    prices = g["Price"]
+    prices = g["Px"]  # comparable per-unit series (package price if size unknown)
     cur = prices.iloc[-1]
     prev = prices.iloc[-2] if len(prices) > 1 else cur
     ma7 = prices.rolling(7, min_periods=1).mean().iloc[-1]
@@ -131,8 +138,9 @@ def ticker_stats(g: pd.DataFrame) -> pd.Series:
 
     return pd.Series({
         "Item": g["Item"].iloc[-1],
-        "Unit": g["Unit"].iloc[-1],
-        "Price": cur,
+        "Pkg": g["Unit"].iloc[-1],      # actual package, e.g. "6 lb"
+        "Price": g["Price"].iloc[-1],   # package price
+        "Per": g["UnitPrice"].iloc[-1],  # per base unit (NaN if size unknown)
         "Day %": day_chg,
         "7d %": week_chg,
         "MA7": ma7,
@@ -147,6 +155,7 @@ stats_rows = []
 for ticker, g in dff.groupby("Ticker"):
     s = ticker_stats(g)
     s["Ticker"] = ticker
+    s["Base"] = BASE_LABEL[BASE_UNIT[ticker]]
     stats_rows.append(s)
 stats = pd.DataFrame(stats_rows)
 
@@ -197,13 +206,20 @@ st.subheader("📊 Market overview")
 
 overview = stats.copy()
 overview["Price"] = overview["Price"].map(lambda p: f"${p:.2f}")
+overview["Per"] = overview.apply(
+    lambda r: f"${r['Per']:.2f}{r['Base']}" if pd.notna(r["Per"]) else "—",
+    axis=1,
+)
 overview["Day %"] = overview["Day %"].map(lambda x: f"{x:+.2f}%")
 overview["7d %"] = overview["7d %"].map(lambda x: f"{x:+.2f}%")
 overview["30d High"] = overview["30d High"].map(lambda p: f"${p:.2f}")
 overview["30d Low"] = overview["30d Low"].map(lambda p: f"${p:.2f}")
-cols = ["Ticker", "Item", "Unit", "Price", "Day %", "7d %", "30d High", "30d Low", "Signal"]
+cols = ["Ticker", "Item", "Pkg", "Price", "Per", "Day %", "7d %",
+        "30d High", "30d Low", "Signal"]
 cols = [c for c in cols if c in overview.columns]
 st.dataframe(overview[cols], use_container_width=True, hide_index=True)
+st.caption("Price = package price · Pkg = actual flyer package size · "
+           "Per = price per base unit (— when the flyer hid the size)")
 
 # ---------------------------------------------------------------------------
 # 6. TICKER DETAIL
@@ -217,26 +233,30 @@ choice = st.selectbox(
 )
 
 g = dff[dff["Ticker"] == choice].sort_values("Date").copy()
-g["MA7"] = g["Price"].rolling(7, min_periods=1).mean()
-g["MA30"] = g["Price"].rolling(30, min_periods=1).mean()
+g["MA7"] = g["Px"].rolling(7, min_periods=1).mean()
+g["MA30"] = g["Px"].rolling(30, min_periods=1).mean()
 
 fig = go.Figure()
-fig.add_trace(go.Scatter(x=g["Date"], y=g["Price"], mode="lines+markers",
-                         name="Price", line=dict(color="#2c5364", width=3)))
+fig.add_trace(go.Scatter(x=g["Date"], y=g["Px"], mode="lines+markers",
+                         name="Per-unit price",
+                         line=dict(color="#2c5364", width=3)))
 fig.add_trace(go.Scatter(x=g["Date"], y=g["MA7"], mode="lines",
                          name="7-day avg", line=dict(color="#f6d365", width=2, dash="dash")))
 fig.add_trace(go.Scatter(x=g["Date"], y=g["MA30"], mode="lines",
                          name="30-day avg", line=dict(color="#f5576c", width=2, dash="dot")))
+last = g.iloc[-1]
+base = BASE_LABEL[BASE_UNIT[choice]]
+per_txt = f" (${last['Px']:.2f}{base})" if pd.notna(last["UnitPrice"]) else ""
 fig.update_layout(height=420, margin=dict(l=10, r=10, t=30, b=10),
-                  title=f"{choice} — ${g['Price'].iloc[-1]:.2f} per {g['Unit'].iloc[-1]}",
-                  yaxis_title="Price ($)", hovermode="x unified")
+                  title=f"{choice} — ${last['Price']:.2f} / {last['Unit']}{per_txt}",
+                  yaxis_title=f"Price ($)", hovermode="x unified")
 st.plotly_chart(fig, use_container_width=True)
 
 s = stats[stats["Ticker"] == choice].iloc[0]
 c1, c2, c3, c4 = st.columns(4)
-c1.metric("30-day high", f"${s['30d High']:.2f}")
-c2.metric("30-day low", f"${s['30d Low']:.2f}")
-c3.metric("7-day avg", f"${s['MA7']:.2f}")
+c1.metric("30-day high", f"${s['30d High']:.2f}{s['Base']}")
+c2.metric("30-day low", f"${s['30d Low']:.2f}{s['Base']}")
+c3.metric("7-day avg", f"${s['MA7']:.2f}{s['Base']}")
 c4.metric("Signal", s["Signal"])
 
 # ---------------------------------------------------------------------------
@@ -272,6 +292,9 @@ st.markdown(
     f"""
     - **Viewing:** {store_choice} — flyer prices (the weekly "dips", not everyday shelf prices)
     - **Data as of:** {data_as_of} · **Real price points:** {real_rows:,}
+    - **Units:** every row records the *actual* flyer package size; charts and
+      signals use the per-unit price ($/kg, $/100g, $/L, $/dozen, $/loaf) so
+      package sizes are comparable across stores and weeks.
     - **Updates:** a scheduled GitHub Actions run refetches flyer prices every morning
       and commits them to `groceries.db` in this repo — no API keys, no cloud secrets.
     - **Manual entries:** tell Muse in chat and he'll add them with a commit.
